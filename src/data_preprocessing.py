@@ -1,23 +1,26 @@
-import pandas as pd
 import os
-from sklearn.model_selection import train_test_split
 import logging
-import yaml
-
+import pandas as pd
+from sklearn.preprocessing import LabelEncoder
+from nltk.stem.porter import PorterStemmer
+from nltk.corpus import stopwords
+import string
+import nltk
+nltk.download('stopwords')
+nltk.download('punkt')
 
 # Ensure the "logs" directory exists
 log_dir = 'logs'
 os.makedirs(log_dir, exist_ok=True)
 
-
-# logging configuration
-logger = logging.getLogger('data_ingestion')
+# Setting up logger
+logger = logging.getLogger('data_preprocessing')
 logger.setLevel('DEBUG')
 
 console_handler = logging.StreamHandler()
 console_handler.setLevel('DEBUG')
 
-log_file_path = os.path.join(log_dir, 'data_ingestion.log')
+log_file_path = os.path.join(log_dir, 'data_preprocessing.log')
 file_handler = logging.FileHandler(log_file_path)
 file_handler.setLevel('DEBUG')
 
@@ -28,74 +31,79 @@ file_handler.setFormatter(formatter)
 logger.addHandler(console_handler)
 logger.addHandler(file_handler)
 
-def load_params(params_path: str) -> dict:
-    """Load parameters from a YAML file."""
-    try:
-        with open(params_path, 'r') as file:
-            params = yaml.safe_load(file)
-        logger.debug('Parameters retrieved from %s', params_path)
-        return params
-    except FileNotFoundError:
-        logger.error('File not found: %s', params_path)
-        raise
-    except yaml.YAMLError as e:
-        logger.error('YAML error: %s', e)
-        raise
-    except Exception as e:
-        logger.error('Unexpected error: %s', e)
-        raise
+def transform_text(text):
+    """
+    Transforms the input text by converting it to lowercase, tokenizing, removing stopwords and punctuation, and stemming.
+    """
+    ps = PorterStemmer()
+    # Convert to lowercase
+    text = text.lower()
+    # Tokenize the text
+    text = nltk.word_tokenize(text)
+    # Remove non-alphanumeric tokens
+    text = [word for word in text if word.isalnum()]
+    # Remove stopwords and punctuation
+    text = [word for word in text if word not in stopwords.words('english') and word not in string.punctuation]
+    # Stem the words
+    text = [ps.stem(word) for word in text]
+    # Join the tokens back into a single string
+    return " ".join(text)
 
-def load_data(data_url: str) -> pd.DataFrame:
-    """Load data from a CSV file."""
+def preprocess_df(df, text_column='text', target_column='target'):
+    """
+    Preprocesses the DataFrame by encoding the target column, removing duplicates, and transforming the text column.
+    """
     try:
-        df = pd.read_csv(data_url)
-        logger.debug('Data loaded from %s', data_url)
-        return df
-    except pd.errors.ParserError as e:
-        logger.error('Failed to parse the CSV file: %s', e)
-        raise
-    except Exception as e:
-        logger.error('Unexpected error occurred while loading the data: %s', e)
-        raise
+        logger.debug('Starting preprocessing for DataFrame')
+        # Encode the target column
+        encoder = LabelEncoder()
+        df[target_column] = encoder.fit_transform(df[target_column])
+        logger.debug('Target column encoded')
 
-def preprocess_data(df: pd.DataFrame) -> pd.DataFrame:
-    """Preprocess the data."""
-    try:
-        df.drop(columns = ['Unnamed: 2', 'Unnamed: 3', 'Unnamed: 4'], inplace = True)
-        df.rename(columns = {'v1': 'target', 'v2': 'text'}, inplace = True)
-        logger.debug('Data preprocessing completed')
+        # Remove duplicate rows
+        df = df.drop_duplicates(keep='first')
+        logger.debug('Duplicates removed')
+        
+        # Apply text transformation to the specified text column
+        df.loc[:, text_column] = df[text_column].apply(transform_text)
+        logger.debug('Text column transformed')
         return df
+    
     except KeyError as e:
-        logger.error('Missing column in the dataframe: %s', e)
+        logger.error('Column not found: %s', e)
         raise
     except Exception as e:
-        logger.error('Unexpected error during preprocessing: %s', e)
-        raise
-
-def save_data(train_data: pd.DataFrame, test_data: pd.DataFrame, data_path: str) -> None:
-    """Save the train and test datasets."""
-    try:
-        raw_data_path = os.path.join(data_path, 'raw')
-        os.makedirs(raw_data_path, exist_ok=True)
-        train_data.to_csv(os.path.join(raw_data_path, "train.csv"), index=False)
-        test_data.to_csv(os.path.join(raw_data_path, "test.csv"), index=False)
-        logger.debug('Train and test data saved to %s', raw_data_path)
-    except Exception as e:
-        logger.error('Unexpected error occurred while saving the data: %s', e)
+        logger.error('Error during text normalization: %s', e)
         raise
 
-def main():
+def main(text_column='text', target_column='target'):
+    """
+    Main function to load raw data, preprocess it, and save the processed data.
+    """
     try:
-        params = load_params(params_path='params.yaml')
-        test_size = params['data_ingestion']['test_size']
-        # test_size = 0.2
-        data_path = 'https://raw.githubusercontent.com/vikashishere/Datasets/main/spam.csv'
-        df = load_data(data_url=data_path)
-        final_df = preprocess_data(df)
-        train_data, test_data = train_test_split(final_df, test_size=test_size, random_state=2)
-        save_data(train_data, test_data, data_path='./data')
+        # Fetch the data from data/raw
+        train_data = pd.read_csv('./data/raw/train.csv')
+        test_data = pd.read_csv('./data/raw/test.csv')
+        logger.debug('Data loaded properly')
+
+        # Transform the data
+        train_processed_data = preprocess_df(train_data, text_column, target_column)
+        test_processed_data = preprocess_df(test_data, text_column, target_column)
+
+        # Store the data inside data/processed
+        data_path = os.path.join("./data", "interim")
+        os.makedirs(data_path, exist_ok=True)
+        
+        train_processed_data.to_csv(os.path.join(data_path, "train_processed.csv"), index=False)
+        test_processed_data.to_csv(os.path.join(data_path, "test_processed.csv"), index=False)
+        
+        logger.debug('Processed data saved to %s', data_path)
+    except FileNotFoundError as e:
+        logger.error('File not found: %s', e)
+    except pd.errors.EmptyDataError as e:
+        logger.error('No data: %s', e)
     except Exception as e:
-        logger.error('Failed to complete the data ingestion process: %s', e)
+        logger.error('Failed to complete the data transformation process: %s', e)
         print(f"Error: {e}")
 
 if __name__ == '__main__':
